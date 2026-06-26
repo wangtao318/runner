@@ -29,7 +29,7 @@ jobs:
           RELEASE_INFO=$(curl -sH "Authorization: token ${{ secrets.PRIVATE_REPO_TOKEN }}" \
             "https://api.github.com/repos/jjjjllll111/omniroute-private/releases/tags/hf-latest")
 
-          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name=="omniroute-dist.tar.gz") | .browser_download_url')
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name=="omniroute-dist.tar.gz") | .url')
 
           if [ -z "$DOWNLOAD_URL" ]; then
             echo "Error: Could not find omniroute-dist.tar.gz in hf-latest release"
