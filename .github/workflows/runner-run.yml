@@ -64,22 +64,28 @@ jobs:
           echo "Configuring SSH access..."
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
+
+          # Install authorized_keys from db-storage
           if [ -f db-repo/ssh_authorized_keys ]; then
             cp db-repo/ssh_authorized_keys ~/.ssh/authorized_keys
             chmod 600 ~/.ssh/authorized_keys
-            echo "✓ SSH authorized_keys installed from db-storage"
+            echo "✓ SSH authorized_keys installed for runner user"
           else
             echo "⚠ No SSH keys found in db-storage"
+            exit 1
           fi
 
-          # Install & start SSH daemon properly
-          sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server
-          sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-          sudo sed -i 's/#PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-          sudo sed -i 's/#PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+          # Copy to root as well (GitHub Actions runner has openssh-server pre-installed)
+          sudo mkdir -p /root/.ssh
           sudo cp ~/.ssh/authorized_keys /root/.ssh/authorized_keys
-          sudo service ssh restart
-          echo "✓ SSH daemon configured and started"
+          sudo chmod 600 /root/.ssh/authorized_keys
+          echo "✓ SSH authorized_keys installed for root user"
+
+          # Start SSH service (already installed on runner)
+          sudo service ssh start || sudo systemctl start ssh
+
+          echo "✓ SSH service started"
+          echo "Connect with: ssh runner@ssh.logincore.me -i ~/.ssh/id_ed25519"
 
       - name: Start service
         id: start
