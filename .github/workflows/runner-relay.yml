@@ -1,0 +1,35 @@
+name: Relay Runner
+
+on:
+  workflow_run:
+    workflows: ["Run OmniRoute Service"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: relay-group
+  cancel-in-progress: true
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Wait before next run
+        run: |
+          echo "Waiting 30 seconds before triggering next run..."
+          sleep 30
+
+      - name: Trigger next run
+        run: |
+          echo "Triggering next run..."
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.UPLOAD_API_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            -d '{"ref":"main"}' \
+            "https://api.github.com/repos/${{ github.repository_owner }}/${{ github.event.repository.name }}/actions/workflows/runner-run.yml/dispatches"
+          echo "✓ Next run triggered successfully!"

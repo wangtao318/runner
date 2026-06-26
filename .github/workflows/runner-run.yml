@@ -1,0 +1,221 @@
+name: Run OmniRoute Service
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: run-group
+  cancel-in-progress: true
+
+env:
+  UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
+  PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+  GH_OWNER: ${{ github.repository_owner }}
+  GH_REPO: ${{ github.event.repository.name }}
+  RUN_DURATION: 19800
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Download latest OmniRoute build
+        run: |
+          echo "Fetching latest release from jjjjllll111/omniroute-private..."
+          RELEASE_INFO=$(curl -sH "Authorization: token ${{ secrets.PRIVATE_REPO_TOKEN }}" \
+            "https://api.github.com/repos/jjjjllll111/omniroute-private/releases/tags/hf-latest")
+
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name=="omniroute-dist.tar.gz") | .browser_download_url')
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Error: Could not find omniroute-dist.tar.gz in hf-latest release"
+            exit 1
+          fi
+
+          echo "Downloading from: $DOWNLOAD_URL"
+          curl -L -H "Authorization: token ${{ secrets.PRIVATE_REPO_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            "$DOWNLOAD_URL" -o omniroute-dist.tar.gz
+
+          echo "Extracting..."
+          mkdir -p app
+          tar -xzf omniroute-dist.tar.gz -C app
+          ls -lah app/
+          echo "Download complete!"
+
+      - name: Restore DB from private git repo
+        run: |
+          git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+          mkdir -p app/data/db
+          if [ -d db-repo ] && [ "$(ls -A db-repo 2>/dev/null | grep -v '^\.git$')" ]; then
+            cp -r db-repo/* app/data/db/ 2>/dev/null || true
+            rm -rf app/data/db/.git
+            echo "DB restored."
+          else
+            echo "Fresh start - no previous DB found"
+          fi
+
+      - name: Start service
+        id: start
+        run: |
+          cd app
+          export APP_DIR="$PWD" DATA_DIR="$PWD/data" PORT=20128 HOSTNAME=0.0.0.0 NODE_ENV=production
+
+          # Check if standalone build exists
+          if [ -d ".next/standalone" ]; then
+            cd .next/standalone
+            nohup bun server.js > /tmp/app.log 2>&1 &
+          elif [ -f "server.js" ]; then
+            nohup bun server.js > /tmp/app.log 2>&1 &
+          else
+            echo "Error: Could not find server.js"
+            exit 1
+          fi
+
+          APP_PID=$!
+          echo "pid=$APP_PID" >> $GITHUB_OUTPUT
+
+          sleep 5
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:20128 > /dev/null 2>&1; then
+              echo "Service ready at http://localhost:20128"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Setup Cloudflare Tunnel
+        id: cloudflare
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          nohup cloudflared tunnel --no-autoupdate run --token ${{ secrets.CF_TUNNEL_TOKEN }} > /tmp/cloudflared.log 2>&1 &
+          echo "$!" > /tmp/cloudflared.pid
+          sleep 5
+          echo "Cloudflare tunnel started"
+
+      - name: Setup SSH access (tmate)
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 5
+        with:
+          detached: true
+          limit-access-to-actor: false
+
+      - name: Display access info
+        run: |
+          echo "=========================================="
+          echo "Service is running!"
+          echo "=========================================="
+          echo ""
+          echo "Local port: 20128"
+          echo "Cloudflare tunnel: check your CF dashboard"
+          echo "SSH access: check action logs for tmate URL"
+          echo ""
+          echo "Logs:"
+          echo "  Service: /tmp/app.log"
+          echo "  Cloudflared: /tmp/cloudflared.log"
+          echo ""
+          echo "=========================================="
+
+      - name: Verify connectivity
+        continue-on-error: true
+        run: |
+          for i in 1 2 3; do
+            CODE=$(curl -sk -o /dev/null -w '%{http_code}' "http://localhost:20128/" --max-time 10 2>/dev/null)
+            echo "Health check $i: HTTP $CODE"
+            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 500 ] 2>/dev/null; then
+              echo "✓ Service is accessible"
+              exit 0
+            fi
+            sleep 5
+          done
+
+      - name: Keep alive + watchdog
+        run: |
+          upload_db() {
+            echo "[$(date)] Uploading DB backup..."
+            if [ ! -d db-repo ]; then
+              git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+            fi
+            (cd db-repo
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+              find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
+              cp -r ../app/data/db/* . 2>/dev/null || true
+              git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
+              git add -A
+              git commit -m "backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+              git branch -M main
+              git push -f origin main
+            )
+            echo "[$(date)] DB backup complete"
+          }
+
+          END=$((SECONDS + ${{ env.RUN_DURATION }}))
+          LAST_UPLOAD=0
+
+          while [ $SECONDS -lt $END ]; do
+            NOW=$(date +%s)
+
+            # Check Cloudflare tunnel health
+            CF_PID=$(cat /tmp/cloudflared.pid 2>/dev/null || echo 0)
+            if [ "$CF_PID" -gt 0 ] && ! kill -0 $CF_PID 2>/dev/null; then
+              echo "[$(date)] ⚠ Cloudflared died, restarting..."
+              nohup cloudflared tunnel --no-autoupdate run --token ${{ secrets.CF_TUNNEL_TOKEN }} > /tmp/cloudflared.log 2>&1 &
+              echo "$!" > /tmp/cloudflared.pid
+              sleep 3
+            fi
+
+            # Check service health
+            if ! kill -0 ${{ steps.start.outputs.pid }} 2>/dev/null; then
+              echo "[$(date)] ⚠ Service died, restarting..."
+              cd app
+              if [ -d ".next/standalone" ]; then
+                cd .next/standalone
+              fi
+              nohup bun server.js > /tmp/app.log 2>&1 &
+              NEW_PID=$!
+              echo "New PID: $NEW_PID"
+              sleep 5
+            fi
+
+            # Upload DB every 10 minutes
+            if [ $((NOW - LAST_UPLOAD)) -ge 600 ]; then
+              upload_db
+              LAST_UPLOAD=$NOW
+            fi
+
+            REMAINING=$((END - SECONDS))
+            echo "[$(date)] ⏱ Remaining: $((REMAINING/3600))h $(((REMAINING%3600)/60))m"
+            sleep 30
+          done
+
+      - name: Final DB backup
+        if: always()
+        run: |
+          echo "Stopping service..."
+          kill ${{ steps.start.outputs.pid }} 2>/dev/null || true
+          sleep 3
+
+          echo "Final DB backup..."
+          if [ ! -d db-repo ]; then
+            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+          fi
+          (cd db-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+            find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
+            cp -r ../app/data/db/* . 2>/dev/null || true
+            git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
+            git add -A
+            git commit -m "final backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+            git branch -M main
+            git push -f origin main
+          )
+          echo "✓ Complete!"
