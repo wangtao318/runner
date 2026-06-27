@@ -200,8 +200,12 @@ jobs:
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+              # Preserve ssh-credentials.txt before cleanup
+              [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds.backup
               find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
               cp -r ../app/data/db/* . 2>/dev/null || true
+              # Restore ssh-credentials.txt after DB copy
+              [ -f /tmp/ssh-creds.backup ] && cp /tmp/ssh-creds.backup ssh-credentials.txt
               git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
               git add -A
               git commit -m "backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
@@ -265,8 +269,12 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+            # Preserve ssh-credentials.txt before cleanup
+            [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds-final.backup
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
             cp -r ../app/data/db/* . 2>/dev/null || true
+            # Restore ssh-credentials.txt after DB copy
+            [ -f /tmp/ssh-creds-final.backup ] && cp /tmp/ssh-creds-final.backup ssh-credentials.txt
             git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
             git add -A
             git commit -m "final backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
