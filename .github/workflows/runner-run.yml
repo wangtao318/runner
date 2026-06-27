@@ -59,33 +59,37 @@ jobs:
             echo "Fresh start - no previous DB found"
           fi
 
-      - name: Setup SSH Access
+      - name: Setup SSH access (tmate)
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 30
+        with:
+          detached: true
+          limit-access-to-actor: false
+
+      - name: Save tmate address to db-storage
         run: |
-          echo "Configuring SSH access..."
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
+          echo "Extracting tmate SSH address..."
+          sleep 5
+          # tmate writes to /tmp/tmate-*.log
+          TMATE_SSH=$(cat /tmp/tmate-*.log 2>/dev/null | grep -oP 'ssh session: \K.*' || tmate show -f '#{tmate-ssh-connect}' 2>/dev/null || echo "not found yet")
+          echo "tmate address: $TMATE_SSH"
 
-          # Install authorized_keys from db-storage
-          if [ -f db-repo/ssh_authorized_keys ]; then
-            cp db-repo/ssh_authorized_keys ~/.ssh/authorized_keys
-            chmod 600 ~/.ssh/authorized_keys
-            echo "✓ SSH authorized_keys installed for runner user"
-          else
-            echo "⚠ No SSH keys found in db-storage"
-            exit 1
+          # Save to db-storage
+          if [ ! -d db-repo ]; then
+            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
           fi
-
-          # Copy to root as well (GitHub Actions runner has openssh-server pre-installed)
-          sudo mkdir -p /root/.ssh
-          sudo cp ~/.ssh/authorized_keys /root/.ssh/authorized_keys
-          sudo chmod 600 /root/.ssh/authorized_keys
-          echo "✓ SSH authorized_keys installed for root user"
-
-          # Start SSH service (already installed on runner)
-          sudo service ssh start || sudo systemctl start ssh
-
-          echo "✓ SSH service started"
-          echo "Connect with: ssh runner@ssh.logincore.me -i ~/.ssh/id_ed25519"
+          (cd db-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+            echo "$TMATE_SSH" > current-ssh-addr.txt
+            echo "Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> current-ssh-addr.txt
+            git add current-ssh-addr.txt
+            git commit -m "update SSH address" --allow-empty
+            git branch -M main
+            git push -f origin main
+          )
+          echo "✓ SSH address saved to db-storage/current-ssh-addr.txt"
 
       - name: Start service
         id: start
