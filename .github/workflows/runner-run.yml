@@ -12,10 +12,12 @@ concurrency:
 
 env:
   UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
+  WANGTAO318_TOKEN: ${{ secrets.WANGTAO318_TOKEN }}
   PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
   GH_OWNER: ${{ github.repository_owner }}
   GH_REPO: ${{ github.event.repository.name }}
   RUN_DURATION: 19800
+  DB_REPO_URL: https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
 
 jobs:
   run:
@@ -49,7 +51,7 @@ jobs:
 
       - name: Restore DB from private git repo
         run: |
-          git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+          git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
           mkdir -p app/data/db
           if [ -d db-repo ] && [ "$(ls -A db-repo 2>/dev/null | grep -v '^\.git$')" ]; then
             cp -r db-repo/* app/data/db/ 2>/dev/null || true
@@ -150,14 +152,15 @@ jobs:
           echo "SSH connects via fixed keypair (no password needed)"
           echo "=========================================="
 
-          # Save credentials to db-storage
+          # Save credentials to db-storage (wangtao318/db-storage)
           if [ ! -d db-repo ]; then
-            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo 2>/dev/null || mkdir db-repo
+            git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo 2>/dev/null || mkdir db-repo
           fi
           (cd db-repo
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            cat > ssh-credentials.txt << CREDS
+            git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
+            cat > ssh-credentials.txt <<CREDS
           SSH Credentials ($(date -u +%Y-%m-%dT%H:%M:%SZ))
           ==========================================
           Host: ssh.logincore.me
@@ -175,7 +178,7 @@ jobs:
             git add ssh-credentials.txt
             git commit -m "SSH credentials $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
             git branch -M main
-            git push -f origin main 2>&1 || echo "⚠ Failed to push to db-storage (password is above in logs)"
+            git push -f origin main 2>&1 || echo "⚠ Failed to push to wangtao318/db-storage (password is above in logs)"
           )
           echo "✓ SSH credentials saved to db-storage/ssh-credentials.txt"
 
@@ -237,14 +240,15 @@ jobs:
       - name: Keep alive + watchdog
         run: |
           upload_db() {
-            echo "[$(date)] Uploading DB backup..."
+            echo "[$(date)] Uploading DB backup to wangtao318/db-storage..."
             if [ ! -d db-repo ]; then
-              git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+              git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
             fi
             (cd db-repo
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+              [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
+              git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
               # Preserve ssh-credentials.txt before cleanup
               [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds.backup
               find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
@@ -306,14 +310,15 @@ jobs:
           kill ${{ steps.start.outputs.pid }} 2>/dev/null || true
           sleep 3
 
-          echo "Final DB backup..."
+          echo "Final DB backup to wangtao318/db-storage..."
           if [ ! -d db-repo ]; then
-            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
+            git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
           fi
           (cd db-repo
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git
+            [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
+            git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
             # Preserve ssh-credentials.txt before cleanup
             [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds-final.backup
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
@@ -326,4 +331,4 @@ jobs:
             git branch -M main
             git push -f origin main
           )
-          echo "✓ Complete!"
+          echo "✓ Final backup complete to wangtao318/db-storage!"
