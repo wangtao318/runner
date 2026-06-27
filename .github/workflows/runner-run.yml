@@ -110,9 +110,11 @@ jobs:
           # Generate host keys
           sudo ssh-keygen -A
 
-          # Configure sshd for password login
+          # Configure sshd for password login and key-based auth
           sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?AuthorizedKeysFile.*/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
 
@@ -129,29 +131,23 @@ jobs:
           # Verify
           sudo ss -tlnp | grep :22 && echo "✓ sshd running" || echo "⚠ sshd may not have started"
 
-          # Generate SSH keypair for non-interactive access
-          ssh-keygen -t ed25519 -f /tmp/runner-ssh-key -N "" -C "runner@github-actions"
-
-          # Install public key for runner user
+          # Install fixed SSH public key from GitHub Secret (same key every run)
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          cat /tmp/runner-ssh-key.pub >> ~/.ssh/authorized_keys
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" >> ~/.ssh/authorized_keys
           chmod 600 ~/.ssh/authorized_keys
+          chown -R runner:runner ~/.ssh 2>/dev/null || true
 
           # Also for root
           sudo mkdir -p /root/.ssh
           sudo chmod 700 /root/.ssh
-          sudo cp /tmp/runner-ssh-key.pub /root/.ssh/authorized_keys
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee -a /root/.ssh/authorized_keys > /dev/null
           sudo chmod 600 /root/.ssh/authorized_keys
 
           # Echo password to logs (always visible even if git push fails)
           echo "=========================================="
           echo "SSH Password: $SSH_PASS"
-          echo "=========================================="
-          echo ""
-          echo "SSH Private Key (save this for non-interactive access):"
-          echo "=========================================="
-          cat /tmp/runner-ssh-key
+          echo "SSH connects via fixed keypair (no password needed)"
           echo "=========================================="
 
           # Save credentials to db-storage
