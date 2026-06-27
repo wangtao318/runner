@@ -60,6 +60,7 @@ jobs:
           fi
 
       - name: Setup SSH access (tmate)
+        id: tmate
         uses: mxschmitt/action-tmate@v3
         timeout-minutes: 30
         with:
@@ -68,11 +69,9 @@ jobs:
 
       - name: Save tmate address to db-storage
         run: |
-          echo "Extracting tmate SSH address..."
-          sleep 5
-          # tmate writes to /tmp/tmate-*.log
-          TMATE_SSH=$(cat /tmp/tmate-*.log 2>/dev/null | grep -oP 'ssh session: \K.*' || tmate show -f '#{tmate-ssh-connect}' 2>/dev/null || echo "not found yet")
-          echo "tmate address: $TMATE_SSH"
+          echo "Getting tmate SSH address from action output..."
+          TMATE_SSH="${{ steps.tmate.outputs.ssh }}"
+          echo "SSH address: $TMATE_SSH"
 
           # Save to db-storage
           if [ ! -d db-repo ]; then
@@ -85,11 +84,11 @@ jobs:
             echo "$TMATE_SSH" > current-ssh-addr.txt
             echo "Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> current-ssh-addr.txt
             git add current-ssh-addr.txt
-            git commit -m "update SSH address" --allow-empty
+            git commit -m "update tmate SSH: $(date -u +%H:%M:%S)" --allow-empty
             git branch -M main
             git push -f origin main
           )
-          echo "✓ SSH address saved to db-storage/current-ssh-addr.txt"
+          echo "✓ SSH address saved: $TMATE_SSH"
 
       - name: Start service
         id: start
