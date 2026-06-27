@@ -192,6 +192,32 @@ jobs:
             sleep 5
           done
 
+      - name: Diagnostic - Output service logs
+        run: |
+          echo "=========================================="
+          echo "SERVICE DIAGNOSTIC OUTPUT"
+          echo "=========================================="
+          echo ""
+          echo "=== Service Logs (/tmp/app.log) ==="
+          cat /tmp/app.log || echo "No log file found"
+          echo ""
+          echo "=== Service Process ==="
+          ps aux | grep -E "bun.*server|node.*server" | grep -v grep || echo "No service process found"
+          echo ""
+          echo "=== Environment Variables ==="
+          PID=$(pgrep -f "server.js" 2>/dev/null | head -1)
+          if [ -n "$PID" ]; then
+            echo "Service PID: $PID"
+            cat /proc/$PID/environ | tr '\0' '\n' | grep -E "JWT_SECRET|API_KEY_SECRET|INITIAL_PASSWORD|PORT|HOSTNAME|APP_DIR|DATA_DIR" || true
+          else
+            echo "No server.js process found"
+          fi
+          echo ""
+          echo "=== Local Connectivity Test ==="
+          curl -v http://localhost:20128/ 2>&1 | head -40
+          echo ""
+          echo "=========================================="
+
       - name: Keep alive + watchdog
         run: |
           upload_db() {
