@@ -63,11 +63,13 @@ jobs:
         id: tmate
         uses: mxschmitt/action-tmate@v3
         timeout-minutes: 30
+        continue-on-error: true
         with:
           detached: true
           limit-access-to-actor: false
 
       - name: Save tmate address to db-storage
+        continue-on-error: true
         run: |
           echo "Getting tmate SSH address from action output..."
           TMATE_SSH="${{ steps.tmate.outputs.ssh }}"
