@@ -136,28 +136,34 @@ jobs:
 
       - name: Keep alive + watchdog
         run: |
-          # 在后台启动 tmate
-          echo "启动 tmate session..."
-          curl -fsSL https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz | tar -xJ -C /tmp
-          /tmp/tmate-2.4.0-static-linux-amd64/tmate -S /tmp/tmate.sock new-session -d
-          sleep 3
-          TMATE_SSH=$(/tmp/tmate-2.4.0-static-linux-amd64/tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}')
-          echo "✓ tmate SSH: $TMATE_SSH"
-
-          # 保存到 db-storage
-          if [ ! -d db-repo ]; then
-            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo || mkdir db-repo
-          fi
-          (cd db-repo
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            echo "$TMATE_SSH" > current-ssh-addr.txt
-            echo "Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> current-ssh-addr.txt
-            git add current-ssh-addr.txt
-            git commit -m "tmate SSH address" --allow-empty
-            git branch -M main
-            git push -f origin main
-          )
+          # 尝试启动 tmate（失败不影响 watchdog 主流程）
+          echo "尝试启动 tmate session..."
+          (
+            curl -fsSL https://github.com/tmate-io/tmate/releases/download/2.4.0/tmate-2.4.0-static-linux-amd64.tar.xz | tar -xJ -C /tmp 2>/dev/null
+            if /tmp/tmate-2.4.0-static-linux-amd64/tmate -S /tmp/tmate.sock new-session -d 2>/dev/null; then
+              sleep 3
+              TMATE_SSH=$(/tmp/tmate-2.4.0-static-linux-amd64/tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || echo "")
+              if [ -n "$TMATE_SSH" ]; then
+                echo "✓ tmate SSH: $TMATE_SSH"
+                # 保存到 db-storage
+                if [ ! -d db-repo ]; then
+                  git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo 2>/dev/null || mkdir db-repo
+                fi
+                (cd db-repo
+                  git config user.name "github-actions[bot]"
+                  git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                  echo "$TMATE_SSH" > current-ssh-addr.txt
+                  echo "Updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> current-ssh-addr.txt
+                  git add current-ssh-addr.txt
+                  git commit -m "tmate SSH" --allow-empty
+                  git branch -M main
+                  git push -f origin main 2>/dev/null
+                ) && echo "✓ SSH address saved to db-storage" || echo "⚠ Failed to save SSH address"
+              fi
+            else
+              echo "⚠ tmate startup failed (multi-session or other issue), continuing without SSH"
+            fi
+          ) || echo "⚠ tmate not available, watchdog will continue without SSH access"
 
           upload_db() {
             echo "[$(date)] Uploading DB backup..."
