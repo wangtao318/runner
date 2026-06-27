@@ -98,12 +98,62 @@ jobs:
           sleep 5
           echo "Cloudflare tunnel started"
 
-      - name: Setup SSH access (tmate)
-        uses: mxschmitt/action-tmate@v3
-        timeout-minutes: 5
-        with:
-          detached: true
-          limit-access-to-actor: false
+      - name: Start SSH server
+        run: |
+          # Install openssh-server
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server
+
+          # Generate host keys
+          sudo ssh-keygen -A
+
+          # Configure sshd for password login
+          sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
+
+          # Generate random password and set for runner user
+          SSH_PASS=$(openssl rand -base64 16 | tr -d '=/+' | head -c 20)
+          echo "runner:$SSH_PASS" | sudo chpasswd
+
+          # Also set for root for debugging
+          echo "root:$SSH_PASS" | sudo chpasswd
+
+          # Start sshd
+          sudo service ssh start
+
+          # Verify
+          sudo ss -tlnp | grep :22 && echo "✓ sshd running" || echo "⚠ sshd may not have started"
+
+          # Save credentials to db-storage
+          if [ ! -d db-repo ]; then
+            git clone https://x-access-token:${{ secrets.UPLOAD_API_TOKEN }}@github.com/${{ github.repository_owner }}/db-storage.git db-repo 2>/dev/null || mkdir db-repo
+          fi
+          (cd db-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            cat > ssh-credentials.txt << CREDS
+          SSH Credentials ($(date -u +%Y-%m-%dT%H:%M:%SZ))
+          ==========================================
+          Host: ssh.logincore.me
+          User: runner (or root)
+          Password: $SSH_PASS
+          ==========================================
+          Connect:
+            1. cloudflared access login --app ssh.logincore.me
+            2. ssh runner@ssh.logincore.me
+          Or use ~/.ssh/config:
+            Host ssh.logincore.me
+              ProxyCommand cloudflared access ssh --hostname %h
+              User runner
+          CREDS
+            git add ssh-credentials.txt
+            git commit -m "SSH credentials $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+            git branch -M main
+            git push -f origin main 2>/dev/null
+          )
+          echo "✓ SSH credentials saved to db-storage/ssh-credentials.txt"
 
       - name: Display access info
         run: |
@@ -112,8 +162,8 @@ jobs:
           echo "=========================================="
           echo ""
           echo "Local port: 20128"
-          echo "Cloudflare tunnel: check your CF dashboard"
-          echo "SSH access: check action logs for tmate URL"
+          echo "Public URL: https://app.logincore.me"
+          echo "SSH: see db-storage/ssh-credentials.txt"
           echo ""
           echo "Logs:"
           echo "  Service: /tmp/app.log"
