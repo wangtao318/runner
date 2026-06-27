@@ -71,9 +71,9 @@ jobs:
           # Check if standalone build exists
           if [ -d ".next/standalone" ]; then
             cd .next/standalone
-            nohup bun server.js > /tmp/app.log 2>&1 &
+            nohup node server.js > /tmp/app.log 2>&1 &
           elif [ -f "server.js" ]; then
-            nohup bun server.js > /tmp/app.log 2>&1 &
+            nohup node server.js > /tmp/app.log 2>&1 &
           else
             echo "Error: Could not find server.js"
             exit 1
@@ -282,7 +282,7 @@ jobs:
               if [ -d ".next/standalone" ]; then
                 cd .next/standalone
               fi
-              nohup bun server.js > /tmp/app.log 2>&1 &
+              nohup node server.js > /tmp/app.log 2>&1 &
               NEW_PID=$!
               echo "New PID: $NEW_PID"
               sleep 5
