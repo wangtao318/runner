@@ -116,8 +116,8 @@ jobs:
           sudo sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
 
-          # Generate random password and set for runner user
-          SSH_PASS=$(openssl rand -base64 16 | tr -d '=/+' | head -c 20)
+          # Use fixed password from GitHub Secrets (no longer random)
+          SSH_PASS="${{ secrets.SSH_PASSWORD }}"
           echo "runner:$SSH_PASS" | sudo chpasswd
 
           # Also set for root for debugging
