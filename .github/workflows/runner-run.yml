@@ -64,6 +64,9 @@ jobs:
         run: |
           cd app
           export APP_DIR="$PWD" DATA_DIR="$PWD/data" PORT=20128 HOSTNAME=0.0.0.0 NODE_ENV=production
+          export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+          export API_KEY_SECRET="${{ secrets.API_KEY_SECRET }}"
+          export INITIAL_PASSWORD="mnbewq321"
 
           # Check if standalone build exists
           if [ -d ".next/standalone" ]; then
