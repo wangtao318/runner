@@ -1,0 +1,346 @@
+name: Run OmniRoute Service
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: run-group
+  cancel-in-progress: true
+
+env:
+  UPLOAD_API_TOKEN: ${{ secrets.UPLOAD_API_TOKEN }}
+  WANGTAO318_TOKEN: ${{ secrets.WANGTAO318_TOKEN }}
+  PRIVATE_REPO_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+  GH_OWNER: ${{ github.repository_owner }}
+  GH_REPO: ${{ github.event.repository.name }}
+  RUN_DURATION: 19800
+  DB_REPO_URL: https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Download latest OmniRoute build
+        run: |
+          echo "Fetching latest release from jjjjllll111/omniroute-private..."
+          RELEASE_INFO=$(curl -sH "Authorization: token ${{ secrets.PRIVATE_REPO_TOKEN }}" \
+            "https://api.github.com/repos/jjjjllll111/omniroute-private/releases/tags/hf-latest")
+
+          DOWNLOAD_URL=$(echo "$RELEASE_INFO" | jq -r '.assets[] | select(.name=="omniroute-dist.tar.gz") | .url')
+
+          if [ -z "$DOWNLOAD_URL" ]; then
+            echo "Error: Could not find omniroute-dist.tar.gz in hf-latest release"
+            exit 1
+          fi
+
+          echo "Downloading from: $DOWNLOAD_URL"
+          curl -L -H "Authorization: token ${{ secrets.PRIVATE_REPO_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            "$DOWNLOAD_URL" -o omniroute-dist.tar.gz
+
+          echo "Extracting..."
+          mkdir -p app
+          tar -xzf omniroute-dist.tar.gz -C app
+          ls -lah app/
+          echo "Download complete!"
+
+      - name: Restore DB from private git repo
+        run: |
+          git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
+          mkdir -p app/data/db
+          if [ -d db-repo ] && [ "$(ls -A db-repo 2>/dev/null | grep -v '^\.git$')" ]; then
+            cp -r db-repo/* app/data/ 2>/dev/null || true
+            rm -rf app/data/.git
+            echo "DB restored."
+          else
+            echo "Fresh start - no previous DB found"
+          fi
+
+      - name: Install sqlite-vec native module
+        run: |
+          cd app
+          echo "Installing sqlite-vec with native Node.js bindings..."
+          npm install sqlite-vec --save-optional --no-package-lock --legacy-peer-deps
+          echo "sqlite-vec native module installed"
+
+      - name: Start service
+        id: start
+        run: |
+          cd app
+          export APP_DIR="$PWD" DATA_DIR="$PWD/data" PORT=20128 HOSTNAME=0.0.0.0 NODE_ENV=production
+          export JWT_SECRET="${{ secrets.JWT_SECRET }}"
+          export API_KEY_SECRET="${{ secrets.API_KEY_SECRET }}"
+          export INITIAL_PASSWORD="${{ secrets.INITIAL_PASSWORD }}"
+          export OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS=true
+          export ENABLE_TLS_FINGERPRINT=true
+          export OMNIROUTE_PUBLIC_BASE_URL="${{ secrets.OMNIROUTE_PUBLIC_BASE_URL }}"
+
+          # Check if standalone build exists
+          if [ -d ".next/standalone" ]; then
+            cd .next/standalone
+            nohup node server.js > /tmp/app.log 2>&1 &
+          elif [ -f "server.js" ]; then
+            nohup node server.js > /tmp/app.log 2>&1 &
+          else
+            echo "Error: Could not find server.js"
+            exit 1
+          fi
+
+          APP_PID=$!
+          echo "pid=$APP_PID" >> $GITHUB_OUTPUT
+
+          sleep 5
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:20128 > /dev/null 2>&1; then
+              echo "Service ready at http://localhost:20128"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Setup Cloudflare Tunnel
+        id: cloudflare
+        run: |
+          curl -fsSL https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o /usr/local/bin/cloudflared
+          chmod +x /usr/local/bin/cloudflared
+          nohup cloudflared tunnel --no-autoupdate run --token ${{ secrets.CF_TUNNEL_TOKEN }} > /tmp/cloudflared.log 2>&1 &
+          echo "$!" > /tmp/cloudflared.pid
+          sleep 5
+          echo "Cloudflare tunnel started"
+
+      - name: Start SSH server
+        run: |
+          # Install openssh-server
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server
+
+          # Generate host keys
+          sudo ssh-keygen -A
+
+          # Configure sshd for password login and key-based auth
+          sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?AuthorizedKeysFile.*/AuthorizedKeysFile .ssh\/authorized_keys/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?UsePAM.*/UsePAM yes/' /etc/ssh/sshd_config
+
+          # Use fixed password from GitHub Secrets (no longer random)
+          SSH_PASS="${{ secrets.SSH_PASSWORD }}"
+          echo "runner:$SSH_PASS" | sudo chpasswd
+
+          # Also set for root for debugging
+          echo "root:$SSH_PASS" | sudo chpasswd
+
+          # Start sshd
+          sudo service ssh start
+
+          # Verify
+          sudo ss -tlnp | grep :22 && echo "✓ sshd running" || echo "⚠ sshd may not have started"
+
+          # Install fixed SSH public key from GitHub Secret (same key every run)
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          chown -R runner:runner ~/.ssh 2>/dev/null || true
+
+          # Also for root
+          sudo mkdir -p /root/.ssh
+          sudo chmod 700 /root/.ssh
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" | sudo tee -a /root/.ssh/authorized_keys > /dev/null
+          sudo chmod 600 /root/.ssh/authorized_keys
+
+          # Echo password to logs (always visible even if git push fails)
+          echo "=========================================="
+          echo "SSH Password: $SSH_PASS"
+          echo "SSH connects via fixed keypair (no password needed)"
+          echo "=========================================="
+
+          # Save credentials to db-storage (wangtao318/db-storage)
+          if [ ! -d db-repo ]; then
+            git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo 2>/dev/null || mkdir db-repo
+          fi
+          (cd db-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
+            cat > ssh-credentials.txt <<CREDS
+          SSH Credentials ($(date -u +%Y-%m-%dT%H:%M:%SZ))
+          ==========================================
+          Host: ssh.logincore.me
+          User: runner (or root)
+          Password: $SSH_PASS
+          ==========================================
+          Connect:
+            1. cloudflared access login --app ssh.logincore.me
+            2. ssh runner@ssh.logincore.me
+          Or use ~/.ssh/config:
+            Host ssh.logincore.me
+              ProxyCommand cloudflared access ssh --hostname %h
+              User runner
+          CREDS
+            git add ssh-credentials.txt
+            git commit -m "SSH credentials $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+            git branch -M main
+            git push -f origin main 2>&1 || echo "⚠ Failed to push to wangtao318/db-storage (password is above in logs)"
+          )
+          echo "✓ SSH credentials saved to db-storage/ssh-credentials.txt"
+
+      - name: Display access info
+        run: |
+          echo "=========================================="
+          echo "Service is running!"
+          echo "=========================================="
+          echo ""
+          echo "Local port: 20128"
+          echo "Public URL: https://app.logincore.me"
+          echo "SSH: see db-storage/ssh-credentials.txt"
+          echo ""
+          echo "Logs:"
+          echo "  Service: /tmp/app.log"
+          echo "  Cloudflared: /tmp/cloudflared.log"
+          echo ""
+          echo "=========================================="
+
+      - name: Verify connectivity
+        continue-on-error: true
+        run: |
+          for i in 1 2 3; do
+            CODE=$(curl -sk -o /dev/null -w '%{http_code}' "http://localhost:20128/" --max-time 10 2>/dev/null)
+            echo "Health check $i: HTTP $CODE"
+            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 500 ] 2>/dev/null; then
+              echo "✓ Service is accessible"
+              exit 0
+            fi
+            sleep 5
+          done
+
+      - name: Diagnostic - Output service logs
+        run: |
+          echo "=========================================="
+          echo "SERVICE DIAGNOSTIC OUTPUT"
+          echo "=========================================="
+          echo ""
+          echo "=== Service Logs (/tmp/app.log) ==="
+          cat /tmp/app.log || echo "No log file found"
+          echo ""
+          echo "=== Service Process ==="
+          ps aux | grep -E "bun.*server|node.*server" | grep -v grep || echo "No service process found"
+          echo ""
+          echo "=== Environment Variables ==="
+          PID=$(pgrep -f "server.js" 2>/dev/null | head -1)
+          if [ -n "$PID" ]; then
+            echo "Service PID: $PID"
+            cat /proc/$PID/environ | tr '\0' '\n' | grep -E "JWT_SECRET|API_KEY_SECRET|INITIAL_PASSWORD|PORT|HOSTNAME|APP_DIR|DATA_DIR" || true
+          else
+            echo "No server.js process found"
+          fi
+          echo ""
+          echo "=== Local Connectivity Test ==="
+          curl -v http://localhost:20128/ 2>&1 | head -40
+          echo ""
+          echo "=========================================="
+
+      - name: Keep alive + watchdog
+        run: |
+          upload_db() {
+            echo "[$(date)] Uploading DB backup to wangtao318/db-storage..."
+            if [ ! -d db-repo ]; then
+              git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
+            fi
+            (cd db-repo
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
+              git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
+              # Preserve ssh-credentials.txt before cleanup
+              [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds.backup
+              find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
+              cp ../app/data/storage.sqlite . 2>/dev/null || true
+              # Restore ssh-credentials.txt after DB copy
+              [ -f /tmp/ssh-creds.backup ] && cp /tmp/ssh-creds.backup ssh-credentials.txt
+              git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
+              git add -A
+              git commit -m "backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+              git branch -M main
+              git push -f origin main
+            )
+            echo "[$(date)] DB backup complete"
+          }
+
+          END=$((SECONDS + ${{ env.RUN_DURATION }}))
+          LAST_UPLOAD=0
+
+          while [ $SECONDS -lt $END ]; do
+            NOW=$(date +%s)
+
+            # Check Cloudflare tunnel health
+            CF_PID=$(cat /tmp/cloudflared.pid 2>/dev/null || echo 0)
+            if [ "$CF_PID" -gt 0 ] && ! kill -0 $CF_PID 2>/dev/null; then
+              echo "[$(date)] ⚠ Cloudflared died, restarting..."
+              nohup cloudflared tunnel --no-autoupdate run --token ${{ secrets.CF_TUNNEL_TOKEN }} > /tmp/cloudflared.log 2>&1 &
+              echo "$!" > /tmp/cloudflared.pid
+              sleep 3
+            fi
+
+            # Check service health
+            if ! kill -0 ${{ steps.start.outputs.pid }} 2>/dev/null; then
+              echo "[$(date)] ⚠ Service died, restarting..."
+              cd app
+              if [ -d ".next/standalone" ]; then
+                cd .next/standalone
+              fi
+              nohup node server.js > /tmp/app.log 2>&1 &
+              NEW_PID=$!
+              echo "New PID: $NEW_PID"
+              sleep 5
+            fi
+
+            # Upload DB every 10 minutes
+            if [ $((NOW - LAST_UPLOAD)) -ge 600 ]; then
+              upload_db
+              LAST_UPLOAD=$NOW
+            fi
+
+            REMAINING=$((END - SECONDS))
+            echo "[$(date)] ⏱ Remaining: $((REMAINING/3600))h $(((REMAINING%3600)/60))m"
+            sleep 30
+          done
+
+      - name: Final DB backup
+        if: always()
+        run: |
+          echo "Stopping service..."
+          kill ${{ steps.start.outputs.pid }} 2>/dev/null || true
+          sleep 3
+
+          echo "Final DB backup to wangtao318/db-storage..."
+          if [ ! -d db-repo ]; then
+            git clone https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git db-repo || mkdir db-repo
+          fi
+          (cd db-repo
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            [ ! -d .git ] && git init && git remote add origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git
+            git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
+            # Preserve ssh-credentials.txt before cleanup
+            [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds-final.backup
+            find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
+            cp ../app/data/storage.sqlite . 2>/dev/null || true
+            # Restore ssh-credentials.txt after DB copy
+            [ -f /tmp/ssh-creds-final.backup ] && cp /tmp/ssh-creds-final.backup ssh-credentials.txt
+            git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
+            git add -A
+            git commit -m "final backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
+            git branch -M main
+            git push -f origin main
+          )
+          echo "✓ Final backup complete to wangtao318/db-storage!"
