@@ -251,6 +251,16 @@ jobs:
 
       - name: Keep alive + watchdog
         run: |
+          compress_db_files() {
+            for f in storage.sqlite *.sqlite 2>/dev/null; do
+              [ -f "$f" ] || continue
+              echo "[$(date)] Compressing $f ($(du -h "$f" | cut -f1))..."
+              sqlite3 "$f" "VACUUM;" 2>/dev/null || true
+              gzip -f "$f"
+              echo "[$(date)] Compressed to $f.gz"
+            done
+          }
+
           upload_db() {
             echo "[$(date)] Uploading DB backup to wangtao318/db-storage..."
             if [ ! -d db-repo ]; then
@@ -265,13 +275,14 @@ jobs:
               [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds.backup
               find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
               cp ../app/data/storage.sqlite . 2>/dev/null || true
+              compress_db_files
               # Restore ssh-credentials.txt after DB copy
               [ -f /tmp/ssh-creds.backup ] && cp /tmp/ssh-creds.backup ssh-credentials.txt
               git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
               git add -A
               git commit -m "backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
               git branch -M main
-              git push -f origin main
+              git push -f origin main 2>&1 || echo "[$(date)] ⚠ git push failed, continuing..."
             )
             echo "[$(date)] DB backup complete"
           }
@@ -335,12 +346,20 @@ jobs:
             [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds-final.backup
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
             cp ../app/data/storage.sqlite . 2>/dev/null || true
+            # Compress DB files inline
+            for f in storage.sqlite *.sqlite 2>/dev/null; do
+              [ -f "$f" ] || continue
+              echo "[$(date)] Compressing $f ($(du -h "$f" | cut -f1))..."
+              sqlite3 "$f" "VACUUM;" 2>/dev/null || true
+              gzip -f "$f"
+              echo "[$(date)] Compressed to $f.gz"
+            done
             # Restore ssh-credentials.txt after DB copy
             [ -f /tmp/ssh-creds-final.backup ] && cp /tmp/ssh-creds-final.backup ssh-credentials.txt
             git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
             git add -A
             git commit -m "final backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
             git branch -M main
-            git push -f origin main
+            git push -f origin main 2>&1 || echo "[$(date)] ⚠ git push failed, continuing..."
           )
           echo "✓ Final backup complete to wangtao318/db-storage!"
