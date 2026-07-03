@@ -252,7 +252,7 @@ jobs:
       - name: Keep alive + watchdog
         run: |
           compress_db_files() {
-            for f in storage.sqlite *.sqlite 2>/dev/null; do
+            for f in storage.sqlite *.sqlite; do
               [ -f "$f" ] || continue
               echo "[$(date)] Compressing $f ($(du -h "$f" | cut -f1))..."
               sqlite3 "$f" "VACUUM;" 2>/dev/null || true
@@ -347,7 +347,7 @@ jobs:
             find . -maxdepth 1 ! -name '.git' ! -name '.' ! -name '..' -exec rm -rf {} +
             cp ../app/data/storage.sqlite . 2>/dev/null || true
             # Compress DB files inline
-            for f in storage.sqlite *.sqlite 2>/dev/null; do
+            for f in storage.sqlite *.sqlite; do
               [ -f "$f" ] || continue
               echo "[$(date)] Compressing $f ($(du -h "$f" | cut -f1))..."
               sqlite3 "$f" "VACUUM;" 2>/dev/null || true
