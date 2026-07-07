@@ -45,6 +45,7 @@ jobs:
           echo "Installing omniroute and sqlite-vec locally..."
           npm install omniroute
           npm install sqlite-vec --save-optional --no-package-lock --legacy-peer-deps
+          npm approve-scripts --allow-scripts-pending || true
 
           export DATA_DIR="$PWD/data" PORT=20128 HOSTNAME=0.0.0.0 NODE_ENV=production
           export JWT_SECRET="${{ secrets.JWT_SECRET }}"
@@ -56,7 +57,7 @@ jobs:
           mkdir -p "$DATA_DIR"
           
           echo "Starting omniroute..."
-          nohup npx omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
+          nohup ./node_modules/.bin/omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
           APP_PID=$!
           echo "pid=$APP_PID" >> $GITHUB_OUTPUT
           sleep 3
@@ -232,7 +233,7 @@ jobs:
               export OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS=true
               export ENABLE_TLS_FINGERPRINT=true
               export OMNIROUTE_PUBLIC_BASE_URL="${{ secrets.OMNIROUTE_PUBLIC_BASE_URL }}"
-              nohup npx omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
+              nohup ./node_modules/.bin/omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
               echo "pid=$!" >> $GITHUB_OUTPUT
               sleep 5
             fi
