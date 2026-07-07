@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
 
       - name: Restore DB from private git repo
         run: |
@@ -131,21 +131,21 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git remote set-url origin https://x-access-token:${{ secrets.WANGTAO318_TOKEN }}@github.com/wangtao318/db-storage.git 2>/dev/null || true
-            cat > ssh-credentials.txt <<CREDS
-SSH Credentials ($(date -u +%Y-%m-%dT%H:%M:%SZ))
-==========================================
-Host: ssh.logincore.me
-User: runner (or root)
-Password: $SSH_PASS
-==========================================
-Connect:
-  1. cloudflared access login --app ssh.logincore.me
-  2. ssh runner@ssh.logincore.me
-Or use ~/.ssh/config:
-  Host ssh.logincore.me
-    ProxyCommand cloudflared access ssh --hostname %h
-    User runner
-CREDS
+            
+            echo "SSH Credentials ($(date -u +%Y-%m-%dT%H:%M:%SZ))" > ssh-credentials.txt
+            echo "==========================================" >> ssh-credentials.txt
+            echo "Host: ssh.logincore.me" >> ssh-credentials.txt
+            echo "User: runner (or root)" >> ssh-credentials.txt
+            echo "Password: $SSH_PASS" >> ssh-credentials.txt
+            echo "==========================================" >> ssh-credentials.txt
+            echo "Connect:" >> ssh-credentials.txt
+            echo "  1. cloudflared access login --app ssh.logincore.me" >> ssh-credentials.txt
+            echo "  2. ssh runner@ssh.logincore.me" >> ssh-credentials.txt
+            echo "Or use ~/.ssh/config:" >> ssh-credentials.txt
+            echo "  Host ssh.logincore.me" >> ssh-credentials.txt
+            echo "    ProxyCommand cloudflared access ssh --hostname %h" >> ssh-credentials.txt
+            echo "    User runner" >> ssh-credentials.txt
+            
             git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
             git add ssh-credentials.txt
             git commit -m "SSH credentials $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
