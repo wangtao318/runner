@@ -56,7 +56,7 @@ jobs:
           mkdir -p "$DATA_DIR"
           
           echo "Starting omniroute..."
-          nohup npx omniroute --no-browser --skip-update --tray --port 20128 --host 0.0.0.0 > /tmp/app.log 2>&1 &
+          nohup npx omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
           APP_PID=$!
           echo "pid=$APP_PID" >> $GITHUB_OUTPUT
           sleep 3
@@ -232,7 +232,7 @@ jobs:
               export OMNIROUTE_ENABLE_RUNTIME_BACKGROUND_TASKS=true
               export ENABLE_TLS_FINGERPRINT=true
               export OMNIROUTE_PUBLIC_BASE_URL="${{ secrets.OMNIROUTE_PUBLIC_BASE_URL }}"
-              nohup npx omniroute --no-browser --skip-update --tray --port 20128 --host 0.0.0.0 > /tmp/app.log 2>&1 &
+              nohup npx omniroute --no-open --no-tray --port 20128 > /tmp/app.log 2>&1 &
               echo "pid=$!" >> $GITHUB_OUTPUT
               sleep 5
             fi
