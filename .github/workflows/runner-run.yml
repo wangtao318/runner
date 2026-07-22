@@ -59,9 +59,58 @@ jobs:
           if [ -f db-repo/data.zip ]; then
             unzip -o db-repo/data.zip -d app/
             rm -rf app/data/logs app/data/bin
+            # Stale WAL/SHM from another host = classic "database disk image is malformed"
+            rm -f app/data/storage.sqlite-wal app/data/storage.sqlite-shm \
+                  app/data/*.sqlite-wal app/data/*.sqlite-shm 2>/dev/null || true
             echo "DB and data restored from zip."
           else
             echo "Fresh start - no previous DB found"
+          fi
+
+          # Integrity check; recover if corrupt
+          DB=app/data/storage.sqlite
+          check_db() {
+            [ -f "$1" ] || return 1
+            # header magic
+            head -c 16 "$1" | grep -q "SQLite format 3" || return 1
+            if command -v sqlite3 >/dev/null 2>&1; then
+              out=$(sqlite3 "$1" "PRAGMA integrity_check;" 2>&1) || return 1
+              echo "$out" | head -1 | grep -qi '^ok$' || return 1
+            else
+              # no sqlite3 CLI: accept valid header only
+              return 0
+            fi
+            return 0
+          }
+
+          sudo apt-get update -qq && sudo apt-get install -y -qq sqlite3 >/dev/null 2>&1 || true
+
+          if [ -f "$DB" ] && check_db "$DB"; then
+            echo "✓ storage.sqlite integrity OK ($(du -h "$DB" | cut -f1))"
+          else
+            echo "⚠ storage.sqlite missing/corrupt — attempting recovery"
+            rm -f "$DB" "${DB}-wal" "${DB}-shm"
+            RECOVERED=0
+            if [ -f db-repo/storage.sqlite.gz ]; then
+              gunzip -c db-repo/storage.sqlite.gz > "$DB" 2>/dev/null || true
+              if check_db "$DB"; then
+                echo "✓ recovered from storage.sqlite.gz"
+                RECOVERED=1
+              fi
+            fi
+            if [ "$RECOVERED" != "1" ]; then
+              # last good pre-write backup inside zip if any
+              CAND=$(ls -1t app/data/db_backups/*.sqlite 2>/dev/null | head -1 || true)
+              if [ -n "$CAND" ] && check_db "$CAND"; then
+                cp "$CAND" "$DB"
+                echo "✓ recovered from $CAND"
+                RECOVERED=1
+              fi
+            fi
+            if [ "$RECOVERED" != "1" ]; then
+              echo "⚠ no healthy DB — wiping for fresh start"
+              rm -f "$DB" "${DB}-wal" "${DB}-shm"
+            fi
           fi
 
       - name: Install sqlite-vec native module
@@ -274,7 +323,14 @@ jobs:
           upload_db() {
             echo "[$(date)] Uploading DB backup to wangtao318/db-storage..."
             mkdir -p db-repo
-            (cd app && zip -r ../db-repo/data.zip data/ -x "data/logs/*" "data/bin/*")
+            # checkpoint + drop WAL before zip so restore never sees half-applied frames
+            if [ -f app/data/storage.sqlite ] && command -v sqlite3 >/dev/null 2>&1; then
+              sqlite3 app/data/storage.sqlite "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+            fi
+            rm -f app/data/storage.sqlite-wal app/data/storage.sqlite-shm app/data/*.sqlite-wal app/data/*.sqlite-shm 2>/dev/null || true
+            (cd app && zip -r ../db-repo/data.zip data/ -x "data/logs/*" "data/bin/*" "data/*.sqlite-wal" "data/*.sqlite-shm")
+            # compact single-file fallback
+            [ -f app/data/storage.sqlite ] && gzip -c app/data/storage.sqlite > db-repo/storage.sqlite.gz || true
             (cd db-repo
               git config user.name "github-actions[bot]"
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -284,6 +340,7 @@ jobs:
               [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds.backup
               git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
               git add data.zip
+              [ -f storage.sqlite.gz ] && git add storage.sqlite.gz
               # Restore ssh-credentials.txt after DB copy
               [ -f /tmp/ssh-creds.backup ] && cp /tmp/ssh-creds.backup ssh-credentials.txt && git add ssh-credentials.txt
               git commit -m "backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
@@ -352,7 +409,12 @@ jobs:
 
           echo "Final DB backup to wangtao318/db-storage..."
           mkdir -p db-repo
-          (cd app && zip -r ../db-repo/data.zip data/ -x "data/logs/*" "data/bin/*")
+          if [ -f app/data/storage.sqlite ] && command -v sqlite3 >/dev/null 2>&1; then
+            sqlite3 app/data/storage.sqlite "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null || true
+          fi
+          rm -f app/data/storage.sqlite-wal app/data/storage.sqlite-shm app/data/*.sqlite-wal app/data/*.sqlite-shm 2>/dev/null || true
+          (cd app && zip -r ../db-repo/data.zip data/ -x "data/logs/*" "data/bin/*" "data/*.sqlite-wal" "data/*.sqlite-shm")
+          [ -f app/data/storage.sqlite ] && gzip -c app/data/storage.sqlite > db-repo/storage.sqlite.gz || true
           (cd db-repo
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -362,6 +424,7 @@ jobs:
             [ -f ssh-credentials.txt ] && cp ssh-credentials.txt /tmp/ssh-creds-final.backup
             git checkout --orphan temp-branch 2>/dev/null || git checkout -b temp-branch
             git add data.zip
+            [ -f storage.sqlite.gz ] && git add storage.sqlite.gz
             # Restore ssh-credentials.txt after DB copy
             [ -f /tmp/ssh-creds-final.backup ] && cp /tmp/ssh-creds-final.backup ssh-credentials.txt && git add ssh-credentials.txt
             git commit -m "final backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" --allow-empty
