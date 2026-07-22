@@ -25,7 +25,8 @@ jobs:
     steps:
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          # tarball better-sqlite3 prebuilds target LTS; Node 26 blocks install scripts
+          node-version: 22
 
       - name: Download latest OmniRoute build
         run: |
@@ -66,9 +67,16 @@ jobs:
       - name: Install sqlite-vec native module
         run: |
           cd app
-          echo "Installing sqlite-vec with native Node.js bindings..."
-          npm install sqlite-vec --save-optional --no-package-lock --legacy-peer-deps
-          echo "sqlite-vec native module installed"
+          echo "Rebuilding native modules for Node $(node -v)..."
+          # Node 26 blocks install scripts by default — approve first (see cc6bfe8)
+          npm install sqlite-vec better-sqlite3 --save-optional --no-package-lock --legacy-peer-deps || true
+          npm approve-scripts --allow-scripts-pending || true
+          npm rebuild better-sqlite3 2>&1 || true
+          npm rebuild sqlite-vec 2>&1 || true
+          # smoke-load natives so we fail early with a clear error
+          node -e "require('better-sqlite3'); console.log('better-sqlite3 OK')" 2>&1 || echo "⚠ better-sqlite3 load failed"
+          node -e "try{require('sqlite-vec');console.log('sqlite-vec OK')}catch(e){console.log('sqlite-vec:',e.message)}" 2>&1 || true
+          echo "native module step done"
 
       - name: Start service
         id: start
@@ -97,13 +105,25 @@ jobs:
           echo "pid=$APP_PID" >> $GITHUB_OUTPUT
 
           sleep 5
-          for i in $(seq 1 10); do
-            if curl -sf http://localhost:20128 > /dev/null 2>&1; then
-              echo "Service ready at http://localhost:20128"
+          READY=0
+          for i in $(seq 1 15); do
+            CODE=$(curl -sk -o /dev/null -w '%{http_code}' http://localhost:20128/ --max-time 5 2>/dev/null || echo 000)
+            echo "boot probe $i: HTTP $CODE"
+            # any HTTP response means process is up (even 500 — dump log for that)
+            if [ "$CODE" != "000" ] && [ -n "$CODE" ]; then
+              READY=1
               break
             fi
             sleep 2
           done
+          echo "=== /tmp/app.log (first boot) ==="
+          cat /tmp/app.log || true
+          echo "================================"
+          if [ "$READY" = "1" ] && [ "$CODE" -ge 200 ] 2>/dev/null && [ "$CODE" -lt 500 ] 2>/dev/null; then
+            echo "Service ready at http://localhost:20128 (HTTP $CODE)"
+          else
+            echo "⚠ Service responded with HTTP ${CODE:-none} — see app.log above"
+          fi
 
       - name: Setup Cloudflare Tunnel
         id: cloudflare
@@ -219,6 +239,9 @@ jobs:
             fi
             sleep 5
           done
+          echo "=== /tmp/app.log after failed health checks ==="
+          cat /tmp/app.log || true
+          echo "================================================"
 
       - name: Keep alive + watchdog
         run: |
